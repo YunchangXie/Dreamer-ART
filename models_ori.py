@@ -210,43 +210,6 @@ class WorldModel(nn.Module):
         error = (model - truth + 1.0) / 2.0
 
         return torch.cat([truth, model, error], 2)
-    
-    def imagine_step_mc(self, state, action, num_samples):
-        """
-        多次调用 dynamics.img_step(state, action)，利用 RSSM 的随机性
-        来估计 epistemic 不确定性。
-
-        输入:
-            state: dict of tensors, 每个 (B, ...)
-            action: (B, act_dim)
-            num_samples: Monte Carlo 次数 M
-
-        返回:
-            next_state: dict of tensors, 代表下一步 latent 状态（用第一个样本）
-            mean_feat:  (B, F) M 次 feature 的均值，用于后续 actor/value
-            epi:        (B,)   在 feature 维度上方差的均值，作为不确定性标量
-        """
-        feats = []
-        next_states = []
-
-        for _ in range(num_samples):
-            # dynamics.img_step 自带随机性（RSSM 里会 sample）
-            succ = self.dynamics.img_step(state, action)
-            feat = self.dynamics.get_feat(succ)
-            next_states.append(succ)
-            feats.append(feat)
-
-        # [M, B, F]
-        feat_stack = torch.stack(feats, dim=0)
-        # epistemic: 先对 sample 维度求 var，再对 feature 维度取平均 -> (B,)
-        epi = feat_stack.var(dim=0).mean(dim=-1)
-        mean_feat = feat_stack.mean(dim=0)  # (B, F)
-
-        # RSSM 的 state 是一个 dict，没办法直接算“均值”，这里直接用第一个样本
-        next_state = next_states[0]
-
-        return next_state, mean_feat, epi
-
 
 
 class ImagBehavior(nn.Module):
@@ -382,7 +345,7 @@ class ImagBehavior(nn.Module):
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
         return imag_feat, imag_state, imag_action, weights, metrics
 
-    def _imagine_fixed(self, start, policy, horizon):
+    def _imagine(self, start, policy, horizon):
         dynamics = self._world_model.dynamics
         flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
         start = {k: flatten(v) for k, v in start.items()}
@@ -401,76 +364,6 @@ class ImagBehavior(nn.Module):
         states = {k: torch.cat([start[k][None], v[:-1]], 0) for k, v in succ.items()}
 
         return feats, states, actions
-
-    def _imagine_infoprop(self, start, policy, horizon):
-        dynamics = self._world_model.dynamics
-        cfg = self._config
-        device = cfg.device
-
-        flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-        start = {k: flatten(v) for k, v in start.items()}
-
-        mc = getattr(cfg, "infoprop_mc_samples", 5)
-        lam = getattr(cfg, "infoprop_lambda", float("inf"))
-
-        state = start
-        B = next(iter(start.values())).shape[0]
-        alive = torch.ones(B, dtype=torch.bool, device=device)
-
-        feats = []
-        actions = []
-        states_list = []  # ✅ 只存“当前 state”，不额外多一个
-
-        for t in range(horizon):
-            # 先把当前 state 记下来（和 imag_feat 对齐）
-            states_list.append(state)
-
-            feat = dynamics.get_feat(state)
-            inp = feat.detach()
-            action = policy(inp).sample()
-
-            next_state, mean_feat, epi = self._world_model.imagine_step_mc(
-                state, action, mc
-            )
-
-            step_alive = (epi <= lam) & alive
-            if not step_alive.any():
-                break
-
-            def mix_state(old, new):
-                mask = step_alive.view(B, *([1] * (old.dim() - 1)))
-                return torch.where(mask, new, old)
-
-            state = {k: mix_state(state[k], next_state[k]) for k in state.keys()}
-
-            feats.append(mean_feat)
-            actions.append(action)
-            alive = step_alive
-
-        # 万一一开始就被截断，回退到固定版，以防后面代码崩
-        if len(feats) == 0:
-            print("[InfoProp] all epi > lambda at t=0, fallback to fixed horizon=1")
-            return self._imagine_fixed(start, policy, 1)
-
-        imag_feat = torch.stack(feats, dim=0)      # [T, B, F]
-        imag_action = torch.stack(actions, dim=0)  # [T, B, A]
-        imag_state = {
-            k: torch.stack([s[k] for s in states_list], dim=0)  # ✅ [T, B, ...]
-            for k in start.keys()
-        }
-
-        return imag_feat, imag_state, imag_action
-
-
-       
-    def _imagine(self, start, policy, horizon):
-
-        if not getattr(self._config, "use_infoprop_termination", False):
-            return self._imagine_fixed(start, policy, horizon)
-        
-        return self._imagine_infoprop(start, policy, horizon)
-
-    
 
     def _compute_target(self, imag_feat, imag_state, reward):
         if "cont" in self._world_model.heads:

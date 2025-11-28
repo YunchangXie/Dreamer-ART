@@ -4,7 +4,8 @@ import os
 import pathlib
 import sys
 
-os.environ["MUJOCO_GL"] = "osmesa"
+# os.environ["MUJOCO_GL"] = "osmesa"
+os.environ["MUJOCO_GL"] = "glfw"
 
 import numpy as np
 import ruamel.yaml as yaml
@@ -343,6 +344,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--configs", nargs="+")
     args, remaining = parser.parse_known_args()
+
+
     configs = yaml.safe_load(
         (pathlib.Path(sys.argv[0]).parent / "configs.yaml").read_text()
     )

@@ -304,6 +304,7 @@ class MultiEncoder(nn.Module):
         mlp_layers,
         mlp_units,
         symlog_inputs,
+
     ):
         super(MultiEncoder, self).__init__()
         excluded = ("is_first", "is_last", "is_terminal", "reward")
@@ -603,7 +604,7 @@ class MLP(nn.Module):
         unimix_ratio=0.01,
         outscale=1.0,
         symlog_inputs=False,
-        device="cuda",
+        device="cpu",
         name="NoName",
     ):
         super(MLP, self).__init__()

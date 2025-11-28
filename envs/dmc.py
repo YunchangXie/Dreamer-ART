@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("MUJOCO_GL", "glfw") 
+
 import gym
 import numpy as np
 
